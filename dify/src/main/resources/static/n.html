@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Dify 文件解析演示</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        button { padding: 8px 16px; font-size: 16px; margin-bottom: 20px; }
+        pre { background-color: #f9f9f9; padding: 10px; border: 1px solid #ccc; white-space: pre-wrap; }
+        .section { margin-bottom: 30px; }
+    </style>
+</head>
+<body>
+
+<h1>Dify 文件解析演示</h1>
+<button onclick="autoUpload()">开始自动下载并解析文件</button>
+
+<div class="section">
+    <h2>解析结果</h2>
+    <pre id="result"></pre>
+</div>
+
+<div class="section">
+    <h2>原始响应（调试用）</h2>
+    <pre id="rawResponse"></pre>
+</div>
+
+<script>
+    async function autoUpload() {
+        const btn = document.querySelector("button");
+        btn.disabled = true;
+        btn.textContent = "处理中，请稍候...";
+
+        try {
+            const resp = await fetch('http://localhost:8080/api/auto-upload');
+            const data = await resp.json();
+
+            const resultEl = document.getElementById("result");
+            const rawEl = document.getElementById("rawResponse");
+            resultEl.textContent = "";
+            rawEl.textContent = "";
+
+            if (data.error) {
+                alert("错误: " + data.error);
+                return;
+            }
+
+            // 显示 answer_text 去掉 ```json 包裹
+            if (data.answer_text) {
+                let text = data.answer_text.replace(/```json\s*([\s\S]*?)```/, "$1");
+                resultEl.textContent = text;
+            }
+
+            // 显示 answer_json 格式化
+            if (data.answer_json) {
+                resultEl.textContent += "\n\nJSON内容:\n" + JSON.stringify(data.answer_json, null, 2);
+            }
+
+            // 显示原始响应
+            if (data.raw_response) {
+                rawEl.textContent = data.raw_response;
+            }
+
+        } catch (err) {
+            console.error(err);
+            alert("操作失败: " + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "开始自动下载并解析文件";
+        }
+    }
+</script>
+
+</body>
+</html>
