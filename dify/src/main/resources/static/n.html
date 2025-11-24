@@ -26,14 +26,20 @@
 </div>
 
 <script>
+
+    let number=44186;
     async function autoUpload() {
         const btn = document.querySelector("button");
         btn.disabled = true;
         btn.textContent = "处理中，请稍候...";
 
         try {
-            const resp = await fetch('http://localhost:8080/api/auto-upload');
+            // const resp = await fetch(`http://localhost:8080/api/auto-upload`);
+            const resp = await fetch(`http://localhost:8080/api/auto-upload?number=${number}`);
+
             const data = await resp.json();
+
+
 
             const resultEl = document.getElementById("result");
             const rawEl = document.getElementById("rawResponse");
