@@ -21,12 +21,12 @@ import java.util.concurrent.TimeUnit;
 public class DifyProxyFileApplication1 {
 
 //
-//    private static final String BASE_URL = "https://api.dify.ai/v1";
-//    private static final String BEARER_TOKEN = "app-u3S8XIseReSTmCjYMlALwtFD";
+    private static final String BASE_URL = "https://api.dify.ai/v1";
+    private static final String BEARER_TOKEN = "app-u3S8XIseReSTmCjYMlALwtFD";
 
 
-    private static final String BASE_URL = "http://154.8.226.18:7777/v1";
-    private static final String BEARER_TOKEN = "app-t6nqXhG1n41scFcSmPLkJBsR";
+//    private static final String BASE_URL = "http://154.8.226.18:7777/v1";
+//    private static final String BEARER_TOKEN = "app-t6nqXhG1n41scFcSmPLkJBsR";
     // 数据库操作工具，由 Spring 自动注入
     @Autowired
     private JdbcTemplate jdbcTemplate;

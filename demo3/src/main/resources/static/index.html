@@ -13,6 +13,13 @@
         .section { margin-bottom: 30px; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
         input { padding: 5px; font-size: 14px; }
         .field { margin: 5px 0; }
+        /* 增加文本内容列的宽度，并限制高度以便滚动 */
+        .text-content-cell {
+            max-width: 300px;
+            max-height: 100px;
+            overflow: auto;
+            white-space: pre-wrap; /* 保留空白符和换行符，并自动换行 */
+        }
     </style>
 </head>
 <body>
@@ -22,7 +29,7 @@
 <label>输入 OA 附件 fieldId（逗号分隔）:</label> <input type="text" id="fileIds" value="44551" style="width: 300px;"> <button onclick="autoUploadMultiple()">开始自动解析</button>
 
 <div class="section">
-    <h2>解析字段</h2>
+    <h2>解析字段 (仅显示第一个文件的结果)</h2>
     <div class="field">发票号码: <span id="invoiceNo"></span></div>
     <div class="field">开票日期: <span id="invoiceDate"></span></div>
     <div class="field">金额: <span id="amount"></span></div>
@@ -43,14 +50,14 @@
             <th>税额</th>
             <th>购买方名称</th>
             <th>销售方名称</th>
-        </tr>
+            <th>文本内容</th> </tr>
         </thead>
         <tbody></tbody>
     </table>
 </div>
 
 <div class="section">
-    <h2>原始响应</h2>
+    <h2>原始响应 (Raw Response)</h2>
     <pre id="rawResponse"></pre>
 </div>
 
@@ -63,6 +70,45 @@
         document.getElementById('buyer').textContent = json["购买方名称"] || '';
         document.getElementById('seller').textContent = json["销售方名称"] || '';
     }
+
+    /**
+     * 辅助函数：从 Dify 的 answer 字符串中分离出 JSON 和文本部分
+     * @param {string} answer - 包含 JSON 和其他文本的字符串
+     * @returns {{json: object, text: string}}
+     */
+    function extractJsonAndTextFromAnswer(answer) {
+        let json = {};
+        let text = answer;
+
+        if (!answer) return { json, text: '' };
+
+        // 尝试找到 JSON 块的起始 '{' 和结束 '}'
+        const start = answer.indexOf('{');
+        const end = answer.lastIndexOf('}');
+
+        if (start !== -1 && end !== -1 && end > start) {
+            const jsonStr = answer.substring(start, end + 1);
+            try {
+                // 尝试解析 JSON 字符串
+                json = JSON.parse(jsonStr);
+
+                // 提取剩余的文本内容
+                const preText = answer.substring(0, start).trim();
+                const postText = answer.substring(end + 1).trim();
+
+                // 将 JSON 前后的文本拼接起来作为文本内容
+                text = `${preText}\n${postText}`.trim();
+
+            } catch (e) {
+                // 解析失败，将整个 answer 视为文本
+                json = {};
+                text = answer;
+            }
+        }
+
+        return { json, text };
+    }
+
 
     async function autoUploadMultiple() {
         const btn = document.querySelector("button");
@@ -81,40 +127,59 @@
             const ids = document.getElementById("fileIds").value
                 .trim()
                 .split(",")
-                .map(id => id.trim());
+                .map(id => id.trim()).filter(id => id); // 过滤掉空的 ID
 
-            const query = ids.map(id => `fieldId=${id}`).join("&");
-            const resp = await fetch(`http://localhost:8080/api/auto-upload?${query}`);
-            const data = await resp.json();
-
-            if (data.error) {
-                alert("错误: " + data.error);
+            if (ids.length === 0) {
+                alert("请输入有效的 OA 附件 fieldId。");
                 return;
             }
 
-            // 支持多文件返回
-            const filesData = Array.isArray(data) ? data : [data];
+            const query = ids.map(id => `fieldId=${id}`).join("&");
+            const resp = await fetch(`http://42.193.124.96:8080/api/auto-upload?${query}`);
+            const apiData = await resp.json();
+
+            if (apiData.error) {
+                alert("错误: " + apiData.error);
+                return;
+            }
+
+            // Dify 返回的数据结构可能因您的中间件而异，这里假设是数组或单对象
+            const filesData = Array.isArray(apiData) ? apiData : [apiData];
+
             filesData.forEach((fileData, index) => {
                 const row = document.createElement("tr");
-                const json = fileData.answer_json || {};
+
+                // 1. 尝试将整个 raw_response 解析为 JSON，这是 Dify API 返回的完整结构
+                let rawJson = {};
+                try {
+                    rawJson = fileData.raw_response ? JSON.parse(fileData.raw_response) : {};
+                } catch(e) {
+                    // 如果不是 JSON，无法处理，仅显示原始响应
+                    rawEl.textContent += `文件ID ${fileData.fileId} 原始响应 (非JSON):\n` + fileData.raw_response + "\n\n";
+                    return; // 跳过此文件
+                }
+
+                // 2. 从 rawJson.answer 中分离出解析结果 (json) 和文本内容 (text)
+                const answerContent = rawJson.answer || "";
+                const { json, text: textContent } = extractJsonAndTextFromAnswer(answerContent);
+
+                // 3. 将完整的 raw_response 添加到原始响应区域
+                rawEl.textContent += `文件ID ${fileData.fileId || "undefined"} 原始响应:\n` + fileData.raw_response + "\n\n";
 
                 // 第一个文件自动填充字段展示部分
                 if (index === 0) fillFieldsFromJson(json);
 
                 row.innerHTML = `
-                <td>${fileData.fileId || ""}</td>
+                <td>${fileData.fileId || rawJson.task_id || ""}</td>
                 <td>${json["发票号码"] || ""}</td>
                 <td>${json["开票日期"] || ""}</td>
                 <td>${json["金额"] || ""}</td>
                 <td>${json["税额"] || ""}</td>
                 <td>${json["购买方名称"] || ""}</td>
                 <td>${json["销售方名称"] || ""}</td>
-            `;
+                <td class="text-content-cell">${textContent.replace(/\\n/g, '<br>')}</td> `;
                 tableBody.appendChild(row);
 
-                if (fileData.raw_response) {
-                    rawEl.textContent += `文件ID ${fileData.fileId} 原始响应:\n` + fileData.raw_response + "\n\n";
-                }
             });
 
         } catch (err) {
