@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Dify 多文件解析演示</title>
+    <style>
+        body { font-family: Arial; padding: 20px; background: #f4f4f4; }
+        button { padding: 8px 16px; font-size: 16px; margin-bottom: 20px; cursor: pointer; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background: #eee; }
+        .section { margin-bottom: 30px; padding: 15px; background: #fff; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        input { padding: 5px; font-size: 14px; }
+        .field { margin: 5px 0; }
+    </style>
+</head>
+<body>
+
+<h1>Dify 多文件解析</h1>
+
+<label>输入 OA 附件 fieldId（逗号分隔）:</label> <input type="text" id="fileIds" value="44551" style="width: 300px;"> <button onclick="autoUploadMultiple()">开始自动解析</button>
+
+<div class="section">
+    <h2>解析字段</h2>
+    <div class="field">发票号码: <span id="invoiceNo"></span></div>
+    <div class="field">开票日期: <span id="invoiceDate"></span></div>
+    <div class="field">金额: <span id="amount"></span></div>
+    <div class="field">税额: <span id="tax"></span></div>
+    <div class="field">购买方名称: <span id="buyer"></span></div>
+    <div class="field">销售方名称: <span id="seller"></span></div>
+</div>
+
+<div class="section">
+    <h2>解析结果表格</h2>
+    <table id="resultTable">
+        <thead>
+        <tr>
+            <th>文件ID</th>
+            <th>发票号码</th>
+            <th>开票日期</th>
+            <th>金额</th>
+            <th>税额</th>
+            <th>购买方名称</th>
+            <th>销售方名称</th>
+        </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<div class="section">
+    <h2>原始响应</h2>
+    <pre id="rawResponse"></pre>
+</div>
+
+<script>
+    function fillFieldsFromJson(json) {
+        document.getElementById('invoiceNo').textContent = json["发票号码"] || '';
+        document.getElementById('invoiceDate').textContent = json["开票日期"] || '';
+        document.getElementById('amount').textContent = json["金额"] || '';
+        document.getElementById('tax').textContent = json["税额"] || '';
+        document.getElementById('buyer').textContent = json["购买方名称"] || '';
+        document.getElementById('seller').textContent = json["销售方名称"] || '';
+    }
+
+    async function autoUploadMultiple() {
+        const btn = document.querySelector("button");
+        btn.disabled = true;
+        btn.textContent = "处理中...";
+
+        const tableBody = document.querySelector("#resultTable tbody");
+        const rawEl = document.getElementById("rawResponse");
+        tableBody.innerHTML = "";
+        rawEl.textContent = "";
+
+        // 清空字段
+        fillFieldsFromJson({});
+
+        try {
+            const ids = document.getElementById("fileIds").value
+                .trim()
+                .split(",")
+                .map(id => id.trim());
+
+            const query = ids.map(id => `fieldId=${id}`).join("&");
+            const resp = await fetch(`http://localhost:8080/api/auto-upload?${query}`);
+            const data = await resp.json();
+
+            if (data.error) {
+                alert("错误: " + data.error);
+                return;
+            }
+
+            // 支持多文件返回
+            const filesData = Array.isArray(data) ? data : [data];
+            filesData.forEach((fileData, index) => {
+                const row = document.createElement("tr");
+                const json = fileData.answer_json || {};
+
+                // 第一个文件自动填充字段展示部分
+                if (index === 0) fillFieldsFromJson(json);
+
+                row.innerHTML = `
+                <td>${fileData.fileId || ""}</td>
+                <td>${json["发票号码"] || ""}</td>
+                <td>${json["开票日期"] || ""}</td>
+                <td>${json["金额"] || ""}</td>
+                <td>${json["税额"] || ""}</td>
+                <td>${json["购买方名称"] || ""}</td>
+                <td>${json["销售方名称"] || ""}</td>
+            `;
+                tableBody.appendChild(row);
+
+                if (fileData.raw_response) {
+                    rawEl.textContent += `文件ID ${fileData.fileId} 原始响应:\n` + fileData.raw_response + "\n\n";
+                }
+            });
+
+        } catch (err) {
+            alert("操作失败: " + err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "开始自动解析";
+        }
+    }
+</script>
+
+</body>
+</html>
