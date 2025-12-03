@@ -18,94 +18,96 @@ import java.net.URL;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 
-@CrossOrigin("*")
 @RestController
-public class DifyProxyFileApplication2 {
+@CrossOrigin("*")
+public class DifyProxyFileApplication3 {
+
+    private static final Logger log = LoggerFactory.getLogger(DifyProxyFileApplication3.class);
 
     // Dify API 配置
     private static final String BASE_URL = "https://api.dify.ai/v1";
     private static final String BEARER_TOKEN = "app-u3S8XIseReSTmCjYMlALwtFD";
 
-    //  泛微下载 Cookie
-    // 此 Cookie 可能会过期，如果下载失败，请务必更新为最新的 JSESSIONID 和 ecology_JSessionid。
-    private static final String WEAVER_COOKIES = "JSESSIONID=aaagu3y-lBfqbbrEejxFz; ecology_JSessionid=aaagu3y-lBfqbbrEejxFz;";
-    private static final Logger log = LoggerFactory.getLogger(DifyProxyFileApplication2.class);
+    // 泛微下载基础 URL
+    private static final String OA_BASE_URL = "http://oa.growlib.cn";
 
     // 数据库操作工具，由 Spring 自动注入
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
     // OkHttp 客户端，用于上传文件与调用 Dify 接口
-    OkHttpClient client = new OkHttpClient.Builder()
+    private final OkHttpClient client = new OkHttpClient.Builder()
             .connectTimeout(6300, TimeUnit.SECONDS)
             .readTimeout(6300, TimeUnit.SECONDS)
             .build();
 
+    // -----------------------------------------------------------------------
+    // 核心接口
+    // -----------------------------------------------------------------------
+
     /**
-     * 自动上传接口
-     * 功能：根据多个 fieldId（组件ID）找出附件、下载附件、上传到 Dify，再触发解析
-     * @param fieldId 接收前端传递的附件ID列表 (前端多请求时，通过前端将多id 分割成单id ,分别请求)
+     * 自动上传接口: GET /api/auto-upload
      */
     @GetMapping("/api/auto-upload")
     public ResponseEntity<?> autoUpload(@RequestParam List<String> fieldId) {
+        // ⚠️ 检查 JdbcTemplate 是否为 null
+        if (jdbcTemplate == null) {
+            log.error("【FATAL ERROR】JdbcTemplate 未注入！");
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Collections.singletonMap("error", "数据库连接组件未初始化。"));
+        }
+
         Map<String, Object> result = new HashMap<>();
         List<String> uploadFileIds = new ArrayList<>();
+        String currentWeaverCookies = WeaverAuthController.getCurrentWeaverCookies();
 
         try {
-            List<Integer> allFileNumbers = new ArrayList<>();
+            // 修正后的检查：如果 Cookie 为空，尝试登录一次。
+            if (currentWeaverCookies.isEmpty()) {
+                log.warn("Cookie 缺失，尝试触发一次登录...");
+                WeaverAuthController authController = new WeaverAuthController();
+                if (!authController.refreshWeaverCredentials()) {
+                    log.error("【FATAL ERROR】Cookie 缺失且无法获取。");
+                    result.put("error", "泛微登录失败，无法获取有效的下载 Cookie。请先访问 /api/auth/login 或检查配置。");
+                    return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(result);
+                }
+                currentWeaverCookies = WeaverAuthController.getCurrentWeaverCookies(); // 重新获取
+            }
 
-            // ✅ SQL 修正：直接通过 DOCID 查找 IMAGEFILEID
+
+            List<Integer> allFileNumbers = new ArrayList<>();
             String sql = "SELECT IMAGEFILEID FROM docimagefile WHERE DOCID = ?";
 
-            // 遍历所有 fieldId，收集它们对应的附件 fileid
+            // 1. 遍历 fieldId，收集附件 fileid
             for (String fId : fieldId) {
-                // ⚠️ 调试日志 1: 打印查询的 ID
                 log.info("【DEBUG】开始查询附件，fieldId=" + fId);
-
                 List<Integer> numbers = jdbcTemplate.queryForList(sql, Integer.class, fId.trim());
-
-                //  调试日志 2: 打印查询结果
                 log.info("【DEBUG】SQL 查询结果：fieldId=" + fId + " 对应附件ID列表=" + numbers);
-
-                if (numbers.isEmpty()) {
-                    log.info("fieldId=" + fId + " 没有附件，跳过");
-                    continue;
-                }
-
                 allFileNumbers.addAll(numbers);
             }
 
             if (allFileNumbers.isEmpty()) {
-                log.info("【DEBUG ERROR】SQL 查找失败，没有找到有效附件ID。");
+                log.info("【DEBUG ERROR】没有找到有效附件ID。");
                 result.put("error", "没有有效附件可上传");
-                // 返回 400 状态码
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(result);
             }
 
-            // 遍历附件 fileId → 下载 → 上传到 Dify
+            // 2. 遍历附件 fileId → 下载 → 上传到 Dify
             for (int fileNum : allFileNumbers) {
-                // 拼接泛微的文件下载 URL
-                String downloadUrl =
-                        "http://oa.growlib.cn/weaver/weaver.file.FileDownload?fileid="
-                                + fileNum + "&download=1&requestid=-1&desrequestid=-1&loginidweaver=196";
+                String downloadUrl = OA_BASE_URL +
+                        "/weaver/weaver.file.FileDownload?fileid=" + fileNum +
+                        "&download=1&requestid=-1&desrequestid=-1&loginidweaver=196";
 
                 log.info("【DEBUG】开始尝试下载文件 fileid=" + fileNum + " from URL: " + downloadUrl);
 
-                // 从泛微下载文件
-                byte[] fileBytes = downloadFile(downloadUrl, WEAVER_COOKIES);
+                byte[] fileBytes = downloadFile(downloadUrl, currentWeaverCookies);
 
-                // ⚠️ 调试日志 3: 打印下载成功
                 log.info("【DEBUG】文件 fileid=" + fileNum + " 下载成功，大小: " + fileBytes.length + " bytes");
 
-
-                // 构造上传给 Dify 的文件名
                 String fileNameWithExt = "file_" + fileNum + ".pdf";
 
-                // 上传到 Dify → 得到 fileId
                 String fileId = uploadFileToDify(fileBytes, fileNameWithExt);
                 uploadFileIds.add(fileId);
 
-                //  调试日志 4: 打印 Dify 上传成功
                 log.info("【DEBUG】文件 fileid=" + fileNum + " 上传 Dify 成功，Dify File ID: " + fileId);
             }
 
@@ -114,12 +116,12 @@ public class DifyProxyFileApplication2 {
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(result);
             }
 
-            // 调用 Dify 的聊天接口，触发解析
+            // 3. 调用 Dify Chat 接口
             JSONObject chatJson = sendChatRequestMultiple(uploadFileIds);
 
             log.info("【DEBUG】Dify 解析请求发送成功。");
 
-            // 前端返回
+            // 4. 前端返回
             result.put("upload_file_ids", uploadFileIds);
             result.put("raw_response", chatJson.toString(2));
 
@@ -134,16 +136,17 @@ public class DifyProxyFileApplication2 {
         } catch (Exception e) {
             e.printStackTrace();
             result.put("error", "操作失败: " + e.getMessage());
-            // 如果是文件下载或 Dify 失败，返回 500
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(result);
         }
     }
 
 
+    // -----------------------------------------------------------------------
+    // 辅助方法
+    // -----------------------------------------------------------------------
+
     /**
-     * 下载泛微文件 (优化了错误提示)
-     * @param urlStr 泛微下载地址
-     * @param cookies 会话 Cookie
+     * 下载泛微文件
      */
     private byte[] downloadFile(String urlStr, String cookies) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
@@ -157,12 +160,10 @@ public class DifyProxyFileApplication2 {
         int responseCode = conn.getResponseCode();
 
         if (responseCode != 200) {
-            // ⚠️ 打印具体的错误码，用于排查 Cookie 问题
-            log.info("【ERROR】下载失败，URL: " + urlStr + " HTTP code: " + responseCode);
+            log.info("【ERROR】下载失败，URL: {} HTTP code: {}", urlStr, responseCode);
             throw new RuntimeException("下载失败，HTTP code=" + responseCode + "。请检查 Cookie 是否过期或文件是否存在。");
         }
 
-        // 将文件流全部读为字节数组
         try (InputStream is = conn.getInputStream()) {
             return is.readAllBytes();
         }
@@ -177,13 +178,11 @@ public class DifyProxyFileApplication2 {
             throw new RuntimeException("文件内容为空，无法上传：" + filename);
         }
 
-        // 构造文件体
         RequestBody fileBody = RequestBody.create(
                 fileBytes,
                 MediaType.parse("application/octet-stream")
         );
 
-        // multipart/form-data 方式构造请求
         MultipartBody requestBody = new MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart("file", filename, fileBody)
@@ -197,14 +196,12 @@ public class DifyProxyFileApplication2 {
 
         try (Response response = client.newCall(request).execute()) {
             String body = response.body().string();
-            // ⚠️ 调试日志
             log.info("【DEBUG】上传文件返回 body = " + body);
 
             if (!response.isSuccessful()) {
                 throw new RuntimeException("文件上传失败: " + body);
             }
 
-            // API 返回的 JSON 中必须有 id
             JSONObject json = new JSONObject(body);
             if (!json.has("id") || json.getString("id").isEmpty()) {
                 throw new RuntimeException("上传接口返回无效 fileId: " + body);
@@ -221,22 +218,21 @@ public class DifyProxyFileApplication2 {
     private JSONObject sendChatRequestMultiple(List<String> uploadFileIds) throws Exception {
         JSONObject req = new JSONObject();
 
-        req.put("query", "请总结一下这些文件内容");  // 提示词
-        req.put("user", "abc-123");                 // 用户ID
-        req.put("response_mode", "blocking");       // 阻塞模式
+        req.put("query", "请总结一下这些文件内容");
+        req.put("user", "abc-123");
+        req.put("response_mode", "blocking");
 
-        // Dify 的文件结构要求
         JSONArray fileArray = new JSONArray();
         for (String fileId : uploadFileIds) {
             JSONObject fileObj = new JSONObject();
-            fileObj.put("type", "document");         // 文件类型
+            fileObj.put("type", "document");
             fileObj.put("transfer_method", "local_file");
-            fileObj.put("upload_file_id", fileId);   // 上传后的 ID
+            fileObj.put("upload_file_id", fileId);
             fileArray.put(fileObj);
         }
 
         JSONObject inputs = new JSONObject();
-        inputs.put("file", fileArray);  // 关键点：key 必须叫 file
+        inputs.put("file", fileArray);
         req.put("inputs", inputs);
 
         RequestBody body = RequestBody.create(
