@@ -1,0 +1,163 @@
+<html>
+<meta charset="utf-8">
+<body>
+
+
+<b>js 代码如下</b>
+
+
+</body>
+<script>
+    function extractJsonAndTextFromAnswer(answer) {
+        let json = {};
+        let text = answer;
+        if (!answer) return { json: {}, text: '' };
+        const start = answer.indexOf('{');
+        const end = answer.lastIndexOf('}');
+
+        if (start !== -1 && end !== -1 && end > start) {
+            try {
+                const jsonStr = answer.substring(start, end + 1);
+                json = JSON.parse(jsonStr);
+                const preText = answer.substring(0, start).trim();
+                const postText = answer.substring(end + 1).trim();
+                text = (preText + "\n" + postText).trim();
+            } catch (e) {
+                json = {};
+                text = answer;
+            }
+        }
+        return { json: json, text: text };
+    }
+    WfForm.bindFieldChangeEvent("field15258", function(obj, id, value){
+
+        // **注意：我们使用 value，它是 E9 附件字段的实际值**
+        let fileIds = value;
+
+        console.log("DEBUG_TRIGGER: field22492 事件已触发。附件ID Value:", fileIds);
+
+        // 检查 fileIds 是否为空或无效（对数字和字符串都有效）
+        if (!fileIds) {
+            let resultEl = document.getElementById("result");
+            if (resultEl) resultEl.textContent = "附件ID为空，无数据需要解析。";
+            return;
+        }
+
+        function autoUpload() {
+
+            let targetNode = obj.parentNode;
+            let resultEl = document.getElementById("result");
+            let rawEl = document.getElementById("rawResponse");
+
+            // 确保 DOM 元素存在
+            if (!resultEl) { resultEl = document.createElement("pre"); resultEl.id = "result"; targetNode.appendChild(resultEl); }
+            if (!rawEl) { rawEl = document.createElement("pre"); rawEl.id = "rawResponse"; targetNode.appendChild(rawEl); }
+
+            resultEl.textContent = "【AI 解析结果】处理中，请稍候…";
+
+            // ? 修正点：使用 String() 强制将 fileIds 转换为字符串再进行 split
+            const idArray = String(fileIds).split(',').filter(id => id.trim() !== '');
+
+            if (idArray.length === 0) {
+                resultEl.textContent = "附件ID为空，无数据需要解析。";
+                return;
+            }
+
+            const DETAIL_TABLE_ID = "detail_1";
+            const FIELD_MAPPING = {
+                // "项目名称": "field16902",
+                "价税合计（小写）": "field16904",
+                "合计税额": "field16906",
+                "发票号码": "field16910"
+            };
+
+            // 清空明细表
+            try {
+                WfForm.delDetailRow(DETAIL_TABLE_ID, "all");
+            } catch (e) {
+                console.error(`明细表清空失败: ${e}`);
+            }
+
+            resultEl.textContent = `【AI 解析结果】准备发送 ${idArray.length} 个独立请求 分析中... `;
+
+            let totalProcessedCount = 0;
+            let outputSummary = "--- 写入明细表结果 ---\n";
+            let allRawResponseText = "";
+
+            // 3. 创建并发送多个独立的 AJAX 请求
+            const ajaxRequests = jQuery.map(idArray, function(singleId, index) {
+                // singleId 已经是字符串形式
+                const apiUrl = `http://42.193.124.96:8081/api/auto-upload?fieldId=${singleId}`;
+                console.log(`DEBUG_API_CALL_${index+1}: 请求 URL:`, apiUrl);
+
+                return jQuery.ajax({
+                    url: apiUrl,
+                    method: "GET",
+                    dataType: "json",
+                    timeout: 30000
+                }).then(function(data) {
+                    // 请求成功：处理单个文件数据
+                    const fileData = Array.isArray(data) ? data[0] : data;
+
+                    let rawResponseText = fileData.raw_response || JSON.stringify(fileData, null, 2);
+                    // allRawResponseText += `--- 文件 ${index + 1} (ID: ${singleId}) 原始响应 ---\n${rawResponseText}\n\n`;
+                    allRawResponseText += `--- 文件 ${index + 1} 分析完成`;
+                    try {
+                        // 由于 raw_response 本身是字符串，需要先解析
+                        let rawJson = JSON.parse(rawResponseText);
+                        const answerContent = rawJson.answer || "";
+                        const { json: invoiceData } = extractJsonAndTextFromAnswer(answerContent);
+                        let rowData = {};
+                        let rowWritten = false;
+
+                        // 构造要写入的数据对象
+                        for (const jsonKey in FIELD_MAPPING) {
+                            const fieldId = FIELD_MAPPING[jsonKey];
+                            const valueToWrite = invoiceData[jsonKey] || '';
+
+                            if (valueToWrite) {
+                                rowData[fieldId] = {value: valueToWrite};
+                                rowWritten = true;
+                            }
+                        }
+
+                        // 新增明细行并赋值
+                        if (rowWritten) {
+                            WfForm.addDetailRow(DETAIL_TABLE_ID, rowData);
+                            outputSummary += `文件 ${index + 1} (ID: ${singleId}): 写入成功。发票号码: ${invoiceData["发票号码"] || '无'} 开票日期: ${invoiceData["开票日期"] || '无'}\n`;
+                            totalProcessedCount++;
+                        } else {
+                            outputSummary += `文件 ${index + 1} (ID: ${singleId}): 无有效数据写入，已跳过。\n`;
+                        }
+                    } catch (e) {
+                        console.error(`处理文件 ${index + 1} (ID: ${singleId}) 数据失败:`, e);
+                        outputSummary += `文件 ${index + 1} (ID: ${singleId}) 处理失败: ${e.message}\n`;
+                    }
+
+                }, function(jqXHR, textStatus, errorThrown) {
+                    // 请求失败：处理单个文件请求错误
+                    console.error(`DEBUG_API_ERROR_${index+1}: API 调用失败 (ID: ${singleId})。`, {textStatus, errorThrown});
+                    outputSummary += `文件 ${index + 1} (ID: ${singleId}): 请求失败。状态: ${textStatus} (HTTP ${jqXHR.status})\n`;
+                });
+            });
+
+            // 4. 使用 jQuery.when 等待所有请求完成，然后更新 UI
+            jQuery.when.apply(jQuery, ajaxRequests).always(function() {
+                resultEl.textContent = `【AI 解析结果完成】`;
+                // resultEl.textContent = `【AI 解析结果】所有 ${idArray.length} 个请求处理完毕。成功写入 ${totalProcessedCount} 行。\n${outputSummary}`;
+                rawEl.textContent = allRawResponseText;
+            });
+        }
+
+        autoUpload();
+    });
+</script>
+</html>
+
+
+
+
+
+
+
+

@@ -1,0 +1,118 @@
+<script>
+
+    // =========================================================
+    // I. 辅助函数定义 (保持不变)
+    // =========================================================
+    function extractJsonAndTextFromAnswer(answer) {
+        // 此函数在不写入明细表的情况下不再严格需要，但为了逻辑完整性保留
+        let json = {};
+        let text = answer;
+        if (!answer) return { json: {}, text: '' };
+        const start = answer.indexOf('{');
+        const end = answer.lastIndexOf('}');
+
+        if (start !== -1 && end !== -1 && end > start) {
+            try {
+                const jsonStr = answer.substring(start, end + 1);
+                json = JSON.parse(jsonStr);
+                const preText = answer.substring(0, start).trim();
+                const postText = answer.substring(end + 1).trim();
+                text = (preText + "\n" + postText).trim();
+            } catch (e) {
+                json = {};
+                text = answer;
+            }
+        }
+        return { json: json, text: text };
+    }
+
+
+    // =========================================================
+    // II. 核心事件绑定
+    // =========================================================
+    WfForm.bindFieldChangeEvent("field22492", function(obj, id, value){
+
+        let fileIds = value;
+
+        console.log("DEBUG_TRIGGER: field22492 事件已触发。附件ID Value:", fileIds);
+
+        function autoUpload() {
+
+            let targetNode = obj.parentNode;
+            // 目标元素：用于显示解析结果
+            let xiangyingEl = document.getElementById("xiangying");
+
+            // 如果不存在，则在父节点下创建一个 <pre> 标签用于显示结果
+            if (!xiangyingEl) {
+                xiangyingEl = document.createElement("pre");
+                xiangyingEl.id = "xiangying";
+                targetNode.appendChild(xiangyingEl);
+            }
+
+            // 初始化显示状态
+            xiangyingEl.textContent = "【AI 解析结果】处理中，请稍候…";
+
+            // 检查 fileIds
+            if (!fileIds) {
+                xiangyingEl.textContent = "附件ID为空，无数据需要解析。";
+                return;
+            }
+
+            // 拆分附件 ID
+            const idArray = String(fileIds).split(',').filter(id => id.trim() !== '');
+
+            if (idArray.length === 0) {
+                xiangyingEl.textContent = "附件ID为空，无数据需要解析。";
+                return;
+            }
+
+            xiangyingEl.textContent = `【AI 解析结果】准备发送 ${idArray.length} 个独立请求...`;
+
+            let allAnswerContentText = ""; // 存储所有文件的 answer 内容
+
+            // 3. 创建并发送多个独立的 AJAX 请求
+            const ajaxRequests = jQuery.map(idArray, function(singleId, index) {
+                const apiUrl = `http://42.193.124.96:8081/api/auto-upload?fieldId=${singleId}`;
+                console.log(`DEBUG_API_CALL_${index+1}: 请求 URL:`, apiUrl);
+
+                return jQuery.ajax({
+                    url: apiUrl,
+                    method: "GET",
+                    dataType: "json",
+                    timeout: 30000
+                }).then(function(data) {
+                    // 请求成功：处理单个文件数据
+                    const fileData = Array.isArray(data) ? data[0] : data;
+
+                    try {
+                        // 解析 raw_response 以获取 answer 字段
+                        let rawResponseText = fileData.raw_response || JSON.stringify(fileData, null, 2);
+                        let rawJson = JSON.parse(rawResponseText);
+                        const answerContent = rawJson.answer || `【错误：未找到 answer 字段】原始响应：${rawResponseText}`;
+
+                        // 汇总 answer 内容
+                        allAnswerContentText += `--- 文件 ${index + 1} (ID: ${singleId}) Answer 内容 ---\n${answerContent}\n\n`;
+
+                    } catch (e) {
+                        console.error(`处理文件 ${index + 1} (ID: ${singleId}) 数据失败:`, e);
+                        allAnswerContentText += `--- 文件 ${index + 1} (ID: ${singleId}) 处理失败 ---\n错误: ${e.message}\n\n`;
+                    }
+
+                }, function(jqXHR, textStatus, errorThrown) {
+                    // 请求失败：处理单个文件请求错误
+                    console.error(`DEBUG_API_ERROR_${index+1}: API 调用失败 (ID: ${singleId})。`, {textStatus, errorThrown});
+                    allAnswerContentText += `--- 文件 ${index + 1} (ID: ${singleId}) 请求失败 ---\n状态: ${textStatus} (HTTP ${jqXHR.status})\n\n`;
+                });
+            });
+
+            // 4. 等待所有请求完成，然后更新 UI
+            jQuery.when.apply(jQuery, ajaxRequests).always(function() {
+                // 最终结果写入 xiangying 元素
+                xiangyingEl.textContent = `【AI 解析结果】所有 ${idArray.length} 个请求处理完毕。\n\n${allAnswerContentText}`;
+            });
+        }
+
+        autoUpload();
+    });
+
+</script>

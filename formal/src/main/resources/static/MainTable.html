@@ -1,0 +1,187 @@
+<html>
+<meta charset="utf-8">
+<body>
+
+
+<b>  泛微 主表 js 代码如下</b>
+
+<script>
+    // =========================================================
+    // I. 辅助函数定义
+    // =========================================================
+
+    /**
+     * [新增] 简易 Markdown 到 HTML 的转换函数
+     * 目标：将 ### 标题和 **粗体** 转换为 HTML，并处理换行。
+     */
+    function simpleMarkdownToHtml(markdownText) {
+        if (!markdownText) return '';
+
+        let html = markdownText;
+
+        // 1. 替换标题标记 (###) 为 <h3> 标签
+        // 注意：这里需要考虑每一行，并避免多余的换行
+        html = html.replace(/^### (.*)$/gm, '<h3>$1</h3>');
+
+        // 2. 替换粗体标记 (**) 为 <strong> 标签
+        html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+        // 3. 将连续的换行符替换为段落分隔符（<p> 或 <br>），以适应 div 容器
+        // 将换行符转换为 <br>，以便保留原始的格式感
+        html = html.replace(/\n/g, '<br>');
+
+        return html;
+    }
+
+    function extractJsonAndTextFromAnswer(answer) {
+        // 此函数在不写入明细表的情况下不再严格需要，但为了逻辑完整性保留
+        let json = {};
+        let text = answer;
+        if (!answer) return { json: {}, text: '' };
+        const start = answer.indexOf('{');
+        const end = answer.lastIndexOf('}');
+
+        if (start !== -1 && end !== -1 && end > start) {
+            try {
+                const jsonStr = answer.substring(start, end + 1);
+                json = JSON.parse(jsonStr);
+                const preText = answer.substring(0, start).trim();
+                const postText = answer.substring(end + 1).trim();
+                text = (preText + "\n" + postText).trim();
+            } catch (e) {
+                json = {};
+                text = answer;
+            }
+        }
+        return { json: json, text: text };
+    }
+    // =========================================================
+    // II. 核心事件绑定
+    // =========================================================
+    WfForm.bindFieldChangeEvent("field22492", function(obj, id, value){
+
+        let fileIds = value;
+
+        console.log("DEBUG_TRIGGER: field22492 事件已触发。附件ID Value:", fileIds);
+
+        function autoUpload() {
+
+            let targetNode = obj.parentNode;
+            // 目标元素：用于显示解析结果
+            let xiangyingEl = document.getElementById("xiangying");
+
+            // 如果不存在，则在父节点下创建一个 <div> 标签用于显示结果
+            if (!xiangyingEl) {
+                xiangyingEl = document.createElement("div");
+                xiangyingEl.id = "xiangying";
+                // 增加样式，以便更好的显示报告格式
+                xiangyingEl.style.whiteSpace = 'pre-wrap';
+                xiangyingEl.style.backgroundColor = '#f9f9f9';
+                xiangyingEl.style.padding = '15px';
+                xiangyingEl.style.border = '1px solid #ccc';
+                xiangyingEl.style.borderRadius = '5px';
+                xiangyingEl.style.marginTop = '10px';
+                targetNode.appendChild(xiangyingEl);
+            }
+
+            // 初始化显示状态
+            xiangyingEl.innerHTML = "【AI 解析结果】处理中，请稍候…";
+
+            // 检查 fileIds
+            if (!fileIds) {
+                xiangyingEl.innerHTML = "附件ID为空，无数据需要解析。";
+                return;
+            }
+
+            // 拆分附件 ID
+            const idArray = String(fileIds).split(',').filter(id => id.trim() !== '');
+
+            if (idArray.length === 0) {
+                xiangyingEl.innerHTML = "附件ID为空，无数据需要解析。";
+                return;
+            }
+
+            xiangyingEl.innerHTML = `【AI 解析结果】准备发送 ${idArray.length} 个独立请求...`;
+
+            let allAnswerContentMarkdown = ""; // 存储所有文件的 Markdown 格式内容
+
+            // 3. 创建并发送多个独立的 AJAX 请求
+            const ajaxRequests = jQuery.map(idArray, function(singleId, index) {
+                const apiUrl = `http://42.193.124.96:8081/api/auto-upload_file?fieldId=${singleId}`;
+                console.log(`DEBUG_API_CALL_${index+1}: 请求 URL:`, apiUrl);
+
+                return jQuery.ajax({
+                    url: apiUrl,
+                    method: "GET",
+                    dataType: "json",
+                    timeout: 3000000
+                }).then(function(data) {
+                    // 请求成功：处理单个文件数据
+                    const fileData = Array.isArray(data) ? data[0] : data;
+
+                    try {
+                        // 解析 raw_response 以获取 answer 字段
+                        let rawResponseText = fileData.raw_response || JSON.stringify(fileData, null, 2);
+                        let rawJson = JSON.parse(rawResponseText);
+                        const answerContent = rawJson.answer || `【错误：未找到 answer 字段】原始响应：${rawResponseText}`;
+
+                        // 成功格式化：使用明确的分隔线和标题 (Markdown 格式)
+                        allAnswerContentMarkdown +=
+                            `\n<hr style="border-top: 3px solid #ccc;">\n` +
+                            `### ? 文件 ${index + 1} (附件 ID: ${singleId}) AI 合同审查报告\n` +
+                            `${answerContent}\n\n`;
+
+                    } catch (e) {
+                        // 解析JSON失败
+                        console.error(`处理文件 ${index + 1} (ID: ${singleId}) 数据失败:`, e);
+                        allAnswerContentMarkdown +=
+                            `\n<hr style="border-top: 1px solid red;">\n` +
+                            `### 文件 ${index + 1} (附件 ID: ${singleId}) 解析失败\n` +
+                            `<strong>致命错误</strong>: 无法解析后端返回的 JSON 响应。请检查后端日志。\n` +
+                            `原始响应：${fileData.raw_response || JSON.stringify(fileData)}\n\n`;
+                    }
+
+                }, function(jqXHR, textStatus, errorThrown) {
+                    // 请求失败：处理单个文件请求错误
+                    const httpStatus = jqXHR.status;
+                    let errorDetail = `状态: ${textStatus}`;
+
+                    if (httpStatus === 504) {
+                        errorDetail += ` (HTTP 504 Gateway Timeout)。请检查**Nginx/负载均衡器**的超时设置。`;
+                    } else if (httpStatus !== 0) {
+                        errorDetail += ` (HTTP ${httpStatus})。`;
+                    }
+
+                    console.error(`DEBUG_API_ERROR_${index+1}: API 调用失败 (ID: ${singleId})。`, {textStatus, errorThrown, httpStatus});
+
+                    // 失败格式化
+                    allAnswerContentMarkdown +=
+                        `\n<hr style="border-top: 1px solid red;">\n` +
+                        `### 文件 ${index + 1} (附件 ID: ${singleId}) 请求失败\n` +
+                        `${errorDetail}\n\n`;
+                });
+            });
+
+            // 4. 等待所有请求完成，然后更新 UI
+            jQuery.when.apply(jQuery, ajaxRequests).always(function() {
+
+                // 1. 构造用于显示的最终文本 (包含 Markdown)
+                let finalReportTextWithMarkdown = `【AI 解析结果】所有 ${idArray.length} 个请求处理完毕。\n\n`;
+                finalReportTextWithMarkdown += allAnswerContentMarkdown;
+
+                // 2. ? 写入字段 field23907
+                // 写入纯文本内容，将 HTML 分隔符替换为纯文本分隔符
+                let pureTextContent = finalReportTextWithMarkdown.replace(/<hr.*?>/g, '----------------------------------------------------------');
+                WfForm.changeFieldValue("field23907", {value: pureTextContent});
+                console.log("DEBUG_FIELD_WRITE: 结果已写入 field23907。");
+                // 3. ? 最终步骤：将 Markdown 文本转换为 HTML 写入 div 容器进行显示
+                xiangyingEl.innerHTML = simpleMarkdownToHtml(finalReportTextWithMarkdown);
+            });
+        }
+
+        autoUpload();
+    });
+</script>
+
+</body>
+</html>
